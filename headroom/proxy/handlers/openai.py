@@ -3655,8 +3655,7 @@ class OpenAIHandlerMixin:
             _ws_path = "/v1/responses"
         if not _is_allowed_websocket_origin(ws_headers):
             logger.warning(
-                "event=websocket_origin_not_allowed request_id=%s session_id=%s path=%s "
-                "origin=%r",
+                "event=websocket_origin_not_allowed request_id=%s session_id=%s path=%s origin=%r",
                 request_id,
                 session_id,
                 _ws_path,
