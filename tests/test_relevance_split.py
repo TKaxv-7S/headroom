@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from headroom.relevance.base import RelevanceScore, RelevanceScorer
 from headroom.transforms.relevance_split import (
+    adaptive_threshold,
     build_relevance_query,
     plan_relevance_split,
     segment,
@@ -87,6 +88,33 @@ def test_build_query_composes_prompt_and_tool_args():
 def test_build_query_handles_missing_pieces():
     assert build_relevance_query("", "", "") == ""
     assert build_relevance_query("just a prompt") == "just a prompt"
+
+
+# --- Adaptive threshold (Otsu) --------------------------------------------------
+
+
+def test_adaptive_threshold_splits_at_the_natural_gap():
+    # Bimodal: cut lands in the valley between the high and low clusters, so the
+    # high cluster is kept and the low one dropped -- not at a fixed constant.
+    t = adaptive_threshold([0.92, 0.88, 0.12, 0.05], floor=0.25)
+    assert 0.12 < t < 0.88
+
+
+def test_adaptive_threshold_is_floored():
+    # A mostly-irrelevant output: the natural break is low, but the floor keeps
+    # us from retaining absolute junk verbatim.
+    assert adaptive_threshold([0.30, 0.28, 0.05, 0.03], floor=0.25) == 0.25
+
+
+def test_adaptive_threshold_all_equal_uses_floor():
+    assert adaptive_threshold([0.4, 0.4, 0.4], floor=0.25) == 0.25
+
+
+def test_adaptive_threshold_moves_with_distribution():
+    # High-scoring output → higher cut than a low-scoring one: the bar adapts.
+    high = adaptive_threshold([0.95, 0.9, 0.6, 0.55], floor=0.1)
+    low = adaptive_threshold([0.4, 0.35, 0.08, 0.05], floor=0.1)
+    assert high > low
 
 
 # --- Router integration (real _apply_strategy_to_content path) -----------------

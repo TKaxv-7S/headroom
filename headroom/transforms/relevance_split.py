@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from headroom.relevance import RelevanceScorer
 
-__all__ = ["build_relevance_query", "segment", "plan_relevance_split"]
+__all__ = ["adaptive_threshold", "build_relevance_query", "plan_relevance_split", "segment"]
 
 
 def build_relevance_query(user_query: str, tool_name: str = "", tool_args: str = "") -> str:
@@ -90,26 +90,71 @@ def segment(content: str, *, window: int = 8, max_chars: int = 1200) -> list[str
     return segments
 
 
+def _otsu_threshold(values: list[float]) -> float:
+    """Otsu's method: the cut between two classes that maximizes between-class
+    variance. Parameter-free — the candidate cuts are the data's own values, so
+    there's no bin size or magic constant. Returns the midpoint of the winning
+    adjacent pair.
+    """
+    xs = sorted(values)
+    n = len(xs)
+    total = sum(xs)
+    w0 = 0.0
+    sum0 = 0.0
+    best_t = xs[0]
+    best_var = -1.0
+    for i in range(n - 1):
+        w0 += 1
+        sum0 += xs[i]
+        w1 = n - w0
+        m0 = sum0 / w0
+        m1 = (total - sum0) / w1
+        between = w0 * w1 * (m0 - m1) ** 2
+        if between > best_var:
+            best_var = between
+            best_t = (xs[i] + xs[i + 1]) / 2.0
+    return best_t
+
+
+def adaptive_threshold(values: list[float], floor: float) -> float:
+    """Data-driven KEEP/DROP cut for one output's relevance scores.
+
+    The operative cut is the natural relevant/irrelevant break (Otsu) *for this
+    output and query* — so it moves with the score distribution instead of a
+    fixed constant. It's floored by ``floor`` so records below the absolute
+    minimum relevance are never kept verbatim (an all-irrelevant output drops
+    entirely). When every record scores the same there's no break to find, so
+    the floor decides (all-in or all-out).
+    """
+    if len({round(v, 9) for v in values}) < 2:
+        return floor
+    return max(_otsu_threshold(values), floor)
+
+
 def plan_relevance_split(
     content: str,
     query: str,
     scorer: RelevanceScorer,
     *,
     threshold: float,
+    adaptive: bool = True,
     window: int = 8,
     max_chars: int = 1200,
     max_records: int | None = None,
 ) -> list[tuple[bool, str]]:
     """Split ``content`` into ordered ``(keep, text)`` runs by relevance to ``query``.
 
-    A record is KEEP when its relevance score is ``>= threshold``; *which*
-    records clear the bar is entirely prompt-driven, so the KEEP fraction
-    ranges from 0% to 100% with the actual content, not a fixed quota.
-    Consecutive same-disposition records are merged into runs (order
-    preserved) so the caller applies one disposition per run. Returns a single
-    KEEP run -- i.e. no split -- when the query is empty, the content is a
-    single record, or it segments into more than ``max_records`` records (a
-    latency guard on the scoring cost), letting the caller fall back.
+    A record is KEEP when its relevance score clears the cut. With
+    ``adaptive`` (default), the cut is the natural relevant/irrelevant break in
+    *this* output's score distribution (Otsu), floored by ``threshold`` — so it
+    adapts to the content instead of being a fixed constant. With
+    ``adaptive=False`` the cut is ``threshold`` exactly. Either way *which*
+    records clear it is entirely prompt-driven, so the KEEP fraction ranges
+    from 0% to 100% with the content, not a fixed quota. Consecutive
+    same-disposition records are merged into runs (order preserved) so the
+    caller applies one disposition per run. Returns a single KEEP run -- i.e.
+    no split -- when the query is empty, the content is a single record, or it
+    segments into more than ``max_records`` records (a latency guard).
     """
     if not query.strip():
         return [(True, content)]
@@ -118,9 +163,10 @@ def plan_relevance_split(
         return [(True, content)]
 
     scores = scorer.score_batch(segs, query)
+    cut = adaptive_threshold([s.score for s in scores], threshold) if adaptive else threshold
     runs: list[tuple[bool, str]] = []
     for seg, sc in zip(segs, scores):
-        keep = sc.score >= threshold
+        keep = sc.score >= cut
         if runs and runs[-1][0] == keep:
             runs[-1] = (keep, runs[-1][1] + seg)
         else:

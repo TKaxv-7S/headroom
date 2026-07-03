@@ -869,6 +869,11 @@ class ContentRouterConfig:
     # 0 = no cap (default): every record is scored regardless of size. Set a
     # positive value to bound per-request embedding cost on very large outputs.
     relevance_max_records: int = 0
+    # Adaptive KEEP/DROP cut: when True (default), the threshold is the natural
+    # relevant/irrelevant break in each output's score distribution (Otsu),
+    # floored by relevance.relevance_threshold — it moves with the content
+    # instead of a fixed constant. False uses the fixed threshold exactly.
+    relevance_adaptive_threshold: bool = True
 
     # Tag protection: preserve custom/workflow XML tags from text compression.
     # When False (default), entire <custom-tag>content</custom-tag> blocks are
@@ -2256,6 +2261,7 @@ class ContentRouter(Transform):
                 query,
                 scorer,
                 threshold=self.config.relevance.relevance_threshold,
+                adaptive=self.config.relevance_adaptive_threshold,
                 max_records=self.config.relevance_max_records,
             )
         except Exception as exc:  # noqa: BLE001
